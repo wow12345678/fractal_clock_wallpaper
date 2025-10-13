@@ -1,3 +1,4 @@
+use core::f32::math::round;
 use std::iter;
 use std::result::Result;
 use std::sync::Arc;
@@ -5,6 +6,7 @@ use wgpu::naga::ShaderStage;
 use wgpu::util::DeviceExt;
 use wgpu::wgc::binding_model::BindGroupLayoutEntryError;
 use wgpu::{BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BufferDescriptor, ShaderStages};
+use std::f32::consts::TAU;
 
 use winit::application::ApplicationHandler;
 use winit::event::{KeyEvent, MouseButton, WindowEvent};
@@ -53,7 +55,6 @@ impl LineData {
         }
     }
 }
-
 
 struct App {
     state: Option<State>,
@@ -132,34 +133,168 @@ impl ApplicationHandler<State> for App {
     }
 }
 
-
-struct Clock;
+struct Clock{
+    time:f64,
+    start_line_width: f32,
+    depth: usize,
+    length_factor: f32,
+    luminance_factor: f32,
+    width_factor: f32,
+    line_count: usize,
+}
 
 impl Clock {
-    fn calc_line_data() -> Vec<LineData> {
-        todo!()
+    fn calc_line_data(&self) -> &'static [LineData] {
+
+    fn paint(&self) {
+        struct Hand {
+            length: f32,
+            angle: f32,
+            vec: [f32;2],
+        }
+
+        impl Hand {
+            fn from_length_angle(length: f32, angle: f32) -> Self {
+                    let (s,c) = (angle.sin(),angle.cos());
+                Self {
+                    length,
+                    angle,
+                    vec: [length * s,length *c],
+                }
+            }
+        }
+
+        let angle_from_period =
+            |period| TAU * (self.time.rem_euclid(period) / period) as f32 - TAU / 4.0;
+
+        let color_from_luminance = |lum:u8| {
+            let l = lum as f64/255.0;
+            wgpu::Color {
+                r:l,g:l,b:l,a:0.0
+            }};
+
+        let hands = [
+            // Second hand:
+            Hand::from_length_angle(self.length_factor, angle_from_period(60.0)),
+            // Minute hand:
+            Hand::from_length_angle(self.length_factor, angle_from_period(60.0 * 60.0)),
+            // Hour hand:
+            Hand::from_length_angle(0.5, angle_from_period(12.0 * 60.0 * 60.0)),
+        ];
+
+        let mut shapes: Vec<Shape> = Vec::new();
+
+        let rect = painter.clip_rect();
+        let to_screen = emath::RectTransform::from_to(
+            Rect::from_center_size(Pos2::ZERO, rect.square_proportions() / self.zoom),
+            rect,
+        );
+
+        let mut paint_line = |points: [Pos2; 2], color: Color32, width: f32| {
+            let line = [to_screen * points[0], to_screen * points[1]];
+
+            // culling
+            shapes.push(LineData {start: line[0],end: line[1], color, width});
+        };
+
+        let hand_rotations = [
+            hands[0].angle - hands[2].angle + TAU / 2.0,
+            hands[1].angle - hands[2].angle + TAU / 2.0,
+        ];
+
+        let hand_rotors = [
+                [hands[0].length * hand_rotations[0].sin(), hands[0].length * hand_rotations[0].cos()],
+                [hands[1].length * hand_rotations[1].sin(), hands[1].length * hand_rotations[1].cos()],
+        ];
+
+        #[derive(Clone, Copy)]
+        struct Node {
+            pos: [f32;2],
+            dir: [f32;2],
+        }
+
+        let mut nodes = Vec::new();
+
+        let mut width = self.start_line_width;
+
+        for (i, hand) in hands.iter().enumerate() {
+            let center = [0.0, 0.0];
+            let end = [center[0] + hand.vec[0],center[1] + hand.vec[1]];
+            paint_line([center, end], color_from_luminance(255), width);
+            if i < 2 {
+                nodes.push(Node {
+                    pos: end,
+                    dir: hand.vec,
+                });
+            }
+        }
+
+        let mut luminance = 0.7; // Start dimmer than main hands
+
+        let rot = |a: [f32;2],b:[f32;2]| {
+                [a[1]*b[0]-a[0]*b[1],a[0]*b[0] + a[1]*b[1]]
+        };
+
+        let add = |a: [f32;2],b:[f32;2]| {
+                [a[0]+b[0],a[1]+b[1]]
+            };
+        
+        let mut new_nodes = Vec::new();
+        for _ in 0..self.depth {
+            new_nodes.clear();
+            new_nodes.reserve(nodes.len() * 2);
+
+            luminance *= self.luminance_factor;
+            width *= self.width_factor;
+
+            let luminance_u8 = round(255.0 * luminance) as u8;
+            if luminance_u8 == 0 {
+                break;
+            }
+
+            for &rotor in &hand_rotors {
+                for a in &nodes {
+                    let new_dir = rot(rotor , a.dir);
+                    let b = Node {
+                        pos: add(a.pos , new_dir),
+                        dir: new_dir,
+                    };
+                    paint_line(
+                        [a.pos, b.pos],
+                        color_from_luminance(luminance_u8),
+                        width,
+                    );
+                    new_nodes.push(b);
+                }
+            }
+
+            std::mem::swap(&mut nodes, &mut new_nodes);
+        }
+        self.line_count = shapes.len();
+    }
+
     }
 }
 
 const VERTICES: &[LineData] = &[
     LineData {
-        start: [-0.5, -0.5],
-        end: [0.5, 0.5],
+        start: [0.5, 0.5],
+        end: [-0.5, -0.5],
         color: [1.0, 0.0, 0.0], // Red diagonal
-        width: 1.0,
+        width: 0.001,
     },
-    LineData {
-        start: [-0.5, 0.5],
-        end: [0.5, -0.5],
-        color: [0.0, 1.0, 0.0], // Green diagonal
-        width: 1.0,
-    },
-    LineData {
-        start: [0.0, -0.5],
-        end: [0.0, 0.5],
-        color: [0.0, 0.0, 1.0], // Blue vertical
-        width: 1.0,
-    },
+    // LineData {
+    //     start: [-0.5, 0.5],
+    //     end: [0.5, -0.5],
+    //     color: [0.0, 1.0, 0.0], // Green diagonal
+    //     width: 0.1,
+    // },
+    // LineData {
+    //     start: [0.0, -0.5],
+    //     end: [0.0, 0.5],
+    //     color: [0.0, 0.0, 1.0], // Blue vertical
+    //     width: 0.1,
+    // },
 ];
 
 pub struct State {
@@ -173,10 +308,13 @@ pub struct State {
     line_data_bind_group: wgpu::BindGroup,
     is_space_pressed: bool,
     window: Arc<Window>,
+    clock: Clock,
 }
 
 impl State {
     async fn new(window: Arc<Window>) -> anyhow::Result<State> {
+        let clock = Clock;
+
         let size = window.inner_size();
 
         // The instance is a handle to our GPU
@@ -340,13 +478,19 @@ impl State {
             is_surface_configured: false,
             is_space_pressed: false,
             window,
+            clock,
         })
     }
 
     fn update(&self) {
         // create vec with LineData
-        let updated_line_data = todo!();
-        self.queue.write_buffer(&self.line_data_buf, 0, updated_line_data);
+        // let updated_line_data = self.clock.calc_line_data();
+
+        // self.queue.write_buffer(
+        //     &self.line_data_buf,
+        //     0,
+        //     bytemuck::cast_slice(updated_line_data),
+        // );
     }
 
     fn render(&self) -> Result<(), wgpu::SurfaceError> {
@@ -377,9 +521,9 @@ impl State {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 1.0,
-                            g: 1.0,
-                            b: 1.0,
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,

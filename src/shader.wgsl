@@ -15,30 +15,38 @@ struct VertexOutput {
 @group(0) @binding(0) var<storage,read> lines: array<LineData>;
 
 
-// vid:
-// 0..2 is first triangle
-// 3..5 is second triangle
-//    0---1,5
-//    |  / |
-//    | /  |
-//   2,3---4
+//        width
+//          |
+//          v
+//start-->0---2,3
+//        |  / |
+//        | /  |
+// end-->1,4---5
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> VertexOutput {
-    
     let line = lines[iid];
 
-    var pos : vec2f;
+    var pos : vec2<f32>;
 
-    switch (vid){
+    let dir = normalize(line.end - line.start);
+    let perp = line.width * vec2f(-dir.y, dir.x);
+
+    switch (vid) {
         case 0u: {
-            pos = line.start;
+            pos = line.start - perp;
         }
-        case 1u,5u: {}
-        case 2u,3u: {
-            pos = line.end;
+        case 1u, 4u: {
+            pos = line.end - perp;
         }
-        case 4u: {}
-        default: {}
+        case 2u, 3u: {
+            pos = line.start + perp;
+        }
+        case 5u: {
+            pos = line.end + perp;
+        }
+        default: {
+            pos = vec2<f32>(0.0, 0.0);
+        }
     }
 
     var out: VertexOutput;
