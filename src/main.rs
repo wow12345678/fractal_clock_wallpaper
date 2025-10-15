@@ -1,12 +1,14 @@
+#![feature(core_float_math, slice_as_array)]
+use ::time::{Time, UtcDateTime, UtcOffset};
 use core::f32::math::round;
-use std::iter;
+use std::f32::consts::TAU;
 use std::result::Result;
 use std::sync::Arc;
-use wgpu::naga::ShaderStage;
+use std::iter;
+
 use wgpu::util::DeviceExt;
 use wgpu::wgc::binding_model::BindGroupLayoutEntryError;
 use wgpu::{BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BufferDescriptor, ShaderStages};
-use std::f32::consts::TAU;
 
 use winit::application::ApplicationHandler;
 use winit::event::{KeyEvent, MouseButton, WindowEvent};
@@ -133,8 +135,8 @@ impl ApplicationHandler<State> for App {
     }
 }
 
-struct Clock{
-    time:f64,
+struct Clock {
+    time: f64,
     start_line_width: f32,
     depth: usize,
     length_factor: f32,
@@ -144,22 +146,29 @@ struct Clock{
 }
 
 impl Clock {
-    fn calc_line_data(&self) -> &'static [LineData] {
+    fn update_time(&mut self) {
+        let dur = UtcDateTime::now()
+            .to_offset(UtcOffset::from_hms(2, 0, 0).expect("has to be valid offset"))
+            .time()
+            .duration_since(Time::MIDNIGHT)
+            .as_seconds_f64();
+        self.time = dur;
+    }
 
-    fn paint(&self) {
+    fn calc_line_data(&mut self) -> Vec<LineData> {
         struct Hand {
             length: f32,
             angle: f32,
-            vec: [f32;2],
+            vec: [f32; 2],
         }
 
         impl Hand {
             fn from_length_angle(length: f32, angle: f32) -> Self {
-                    let (s,c) = (angle.sin(),angle.cos());
+                let (s, c) = (angle.sin(), angle.cos());
                 Self {
                     length,
                     angle,
-                    vec: [length * s,length *c],
+                    vec: [length * s, length * c],
                 }
             }
         }
@@ -167,11 +176,15 @@ impl Clock {
         let angle_from_period =
             |period| TAU * (self.time.rem_euclid(period) / period) as f32 - TAU / 4.0;
 
-        let color_from_luminance = |lum:u8| {
-            let l = lum as f64/255.0;
+        let color_from_luminance = |lum: u8| {
+            let l = lum as f64 / 255.0;
             wgpu::Color {
-                r:l,g:l,b:l,a:0.0
-            }};
+                r: l,
+                g: l,
+                b: l,
+                a: 0.0,
+            }
+        };
 
         let hands = [
             // Second hand:
@@ -182,19 +195,18 @@ impl Clock {
             Hand::from_length_angle(0.5, angle_from_period(12.0 * 60.0 * 60.0)),
         ];
 
-        let mut shapes: Vec<Shape> = Vec::new();
+        let mut lines: Vec<LineData> = Vec::new();
 
-        let rect = painter.clip_rect();
-        let to_screen = emath::RectTransform::from_to(
-            Rect::from_center_size(Pos2::ZERO, rect.square_proportions() / self.zoom),
-            rect,
-        );
+        let mut paint_line = |points: [[f32; 2]; 2], color: wgpu::Color, width: f32| {
+            let line = [points[0], points[1]];
+            let c = [color.r as f32, color.g as f32, color.b as f32];
 
-        let mut paint_line = |points: [Pos2; 2], color: Color32, width: f32| {
-            let line = [to_screen * points[0], to_screen * points[1]];
-
-            // culling
-            shapes.push(LineData {start: line[0],end: line[1], color, width});
+            lines.push(LineData {
+                start: line[0],
+                end: line[1],
+                color: c,
+                width,
+            });
         };
 
         let hand_rotations = [
@@ -203,14 +215,20 @@ impl Clock {
         ];
 
         let hand_rotors = [
-                [hands[0].length * hand_rotations[0].sin(), hands[0].length * hand_rotations[0].cos()],
-                [hands[1].length * hand_rotations[1].sin(), hands[1].length * hand_rotations[1].cos()],
+            [
+                hands[0].length * hand_rotations[0].sin(),
+                hands[0].length * hand_rotations[0].cos(),
+            ],
+            [
+                hands[1].length * hand_rotations[1].sin(),
+                hands[1].length * hand_rotations[1].cos(),
+            ],
         ];
 
         #[derive(Clone, Copy)]
         struct Node {
-            pos: [f32;2],
-            dir: [f32;2],
+            pos: [f32; 2],
+            dir: [f32; 2],
         }
 
         let mut nodes = Vec::new();
@@ -219,7 +237,7 @@ impl Clock {
 
         for (i, hand) in hands.iter().enumerate() {
             let center = [0.0, 0.0];
-            let end = [center[0] + hand.vec[0],center[1] + hand.vec[1]];
+            let end = [center[0] + hand.vec[0], center[1] + hand.vec[1]];
             paint_line([center, end], color_from_luminance(255), width);
             if i < 2 {
                 nodes.push(Node {
@@ -231,14 +249,10 @@ impl Clock {
 
         let mut luminance = 0.7; // Start dimmer than main hands
 
-        let rot = |a: [f32;2],b:[f32;2]| {
-                [a[1]*b[0]-a[0]*b[1],a[0]*b[0] + a[1]*b[1]]
-        };
+        let rot = |a: [f32; 2], b: [f32; 2]| [a[1] * b[0] - a[0] * b[1], a[0] * b[0] + a[1] * b[1]];
 
-        let add = |a: [f32;2],b:[f32;2]| {
-                [a[0]+b[0],a[1]+b[1]]
-            };
-        
+        let add = |a: [f32; 2], b: [f32; 2]| [a[0] + b[0], a[1] + b[1]];
+
         let mut new_nodes = Vec::new();
         for _ in 0..self.depth {
             new_nodes.clear();
@@ -254,25 +268,21 @@ impl Clock {
 
             for &rotor in &hand_rotors {
                 for a in &nodes {
-                    let new_dir = rot(rotor , a.dir);
+                    let new_dir = rot(rotor, a.dir);
                     let b = Node {
-                        pos: add(a.pos , new_dir),
+                        pos: add(a.pos, new_dir),
                         dir: new_dir,
                     };
-                    paint_line(
-                        [a.pos, b.pos],
-                        color_from_luminance(luminance_u8),
-                        width,
-                    );
+                    paint_line([a.pos, b.pos], color_from_luminance(luminance_u8), width);
                     new_nodes.push(b);
                 }
             }
 
             std::mem::swap(&mut nodes, &mut new_nodes);
         }
-        self.line_count = shapes.len();
-    }
+        self.line_count = lines.len();
 
+        lines
     }
 }
 
@@ -313,7 +323,21 @@ pub struct State {
 
 impl State {
     async fn new(window: Arc<Window>) -> anyhow::Result<State> {
-        let clock = Clock;
+        let dur = UtcDateTime::now()
+            .to_offset(UtcOffset::from_hms(2, 0, 0).expect("has to be valid offset"))
+            .time()
+            .duration_since(Time::MIDNIGHT)
+            .as_seconds_f64();
+
+        let mut clock = Clock {
+            time: dur,
+            start_line_width: 2.5,
+            depth: 1,
+            length_factor: 0.8,
+            luminance_factor: 0.8,
+            width_factor: 0.8,
+            line_count: 0,
+        };
 
         let size = window.inner_size();
 
@@ -383,9 +407,11 @@ impl State {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
+
+        let lines = clock.calc_line_data();
         let line_data_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("line_data_buf"),
-            contents: bytemuck::cast_slice(VERTICES),
+            contents: bytemuck::cast_slice(&lines),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -482,15 +508,17 @@ impl State {
         })
     }
 
-    fn update(&self) {
+    fn update(&mut self) {
+        self.clock.update_time();
         // create vec with LineData
-        // let updated_line_data = self.clock.calc_line_data();
+        let updated_line_data = self.clock.calc_line_data();
 
-        // self.queue.write_buffer(
-        //     &self.line_data_buf,
-        //     0,
-        //     bytemuck::cast_slice(updated_line_data),
-        // );
+        // dbg!(&updated_line_data);
+        self.queue.write_buffer(
+            &self.line_data_buf,
+            0,
+            bytemuck::cast_slice(&updated_line_data),
+        );
     }
 
     fn render(&self) -> Result<(), wgpu::SurfaceError> {
