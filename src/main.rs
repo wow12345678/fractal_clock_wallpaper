@@ -7,8 +7,7 @@ use std::sync::Arc;
 use std::iter;
 
 use wgpu::util::DeviceExt;
-use wgpu::wgc::binding_model::BindGroupLayoutEntryError;
-use wgpu::{BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BufferDescriptor, ShaderStages};
+use wgpu::{BindGroupEntry, BindGroupLayoutEntry};
 
 use winit::application::ApplicationHandler;
 use winit::event::{KeyEvent, MouseButton, WindowEvent};
@@ -71,7 +70,7 @@ impl App {
 impl ApplicationHandler<State> for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         #[allow(unused_mut)]
-        let mut window_attributes = Window::default_attributes().with_title("title");
+        let mut window_attributes = Window::default_attributes().with_title("fractal_clock");
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
@@ -286,26 +285,6 @@ impl Clock {
     }
 }
 
-const VERTICES: &[LineData] = &[
-    LineData {
-        start: [0.5, 0.5],
-        end: [-0.5, -0.5],
-        color: [1.0, 0.0, 0.0], // Red diagonal
-        width: 0.001,
-    },
-    // LineData {
-    //     start: [-0.5, 0.5],
-    //     end: [0.5, -0.5],
-    //     color: [0.0, 1.0, 0.0], // Green diagonal
-    //     width: 0.1,
-    // },
-    // LineData {
-    //     start: [0.0, -0.5],
-    //     end: [0.0, 0.5],
-    //     color: [0.0, 0.0, 1.0], // Blue vertical
-    //     width: 0.1,
-    // },
-];
 
 pub struct State {
     surface: wgpu::Surface<'static>,
@@ -331,9 +310,9 @@ impl State {
 
         let mut clock = Clock {
             time: dur,
-            start_line_width: 2.5,
-            depth: 1,
-            length_factor: 0.8,
+            start_line_width: 0.002,
+            depth: 9,
+            length_factor: 0.5,
             luminance_factor: 0.8,
             width_factor: 0.8,
             line_count: 0,
@@ -565,7 +544,7 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.line_data_bind_group, &[]);
-            render_pass.draw(0..6, 0..VERTICES.len() as u32);
+            render_pass.draw(0..6, 0..self.clock.line_count as u32);
         }
 
         self.queue.submit(iter::once(encoder.finish()));
