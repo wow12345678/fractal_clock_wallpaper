@@ -1,9 +1,9 @@
 use ::time::{Time, UtcDateTime, UtcOffset};
 use std::f32::consts::TAU;
-use std::iter;
 use std::ops::{Add, Mul};
 use std::result::Result;
 use std::sync::Arc;
+use std::{f64, iter};
 use winit::dpi::PhysicalSize;
 
 use wgpu::util::DeviceExt;
@@ -24,39 +24,6 @@ struct LineData {
     width: f32,
 }
 
-impl LineData {
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<LineData>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 2 * mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
-                    shader_location: 3,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: (2 * mem::size_of::<[f32; 2]>() + mem::size_of::<[f32; 2]>())
-                        as wgpu::BufferAddress,
-                    shader_location: 4,
-                    format: wgpu::VertexFormat::Float32,
-                },
-            ],
-        }
-    }
-}
-
 struct App {
     state: Option<State>,
 }
@@ -69,8 +36,7 @@ impl App {
 
 impl ApplicationHandler<State> for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        #[allow(unused_mut)]
-        let mut window_attributes = Window::default_attributes().with_title("fractal_clock_test");
+        let window_attributes = Window::default_attributes().with_title("fractal_clock_test");
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
@@ -87,7 +53,7 @@ impl ApplicationHandler<State> for App {
     fn window_event(
         &mut self,
         event_loop: &winit::event_loop::ActiveEventLoop,
-        window_id: winit::window::WindowId,
+        _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
         {
@@ -102,7 +68,9 @@ impl ApplicationHandler<State> for App {
                 WindowEvent::RedrawRequested => {
                     state.update();
                     match state.render() {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            state.window.request_redraw();
+                        }
                         // Reconfigure the surface if it's lost or outdated
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                             let size = state.window.inner_size();
@@ -190,6 +158,7 @@ impl Add for Vec2 {
 
 struct Clock {
     time: f64,
+    last_calc_time: f64,
     start_line_width: f32,
     depth: usize,
     length_factor: f32,
@@ -197,6 +166,8 @@ struct Clock {
     width_factor: f32,
     line_count: usize,
     phys_size: PhysicalSize<u32>,
+    zoom: f32,
+    line_cache: Vec<LineData>,
 }
 
 impl Clock {
@@ -218,7 +189,7 @@ impl Clock {
 
         impl Hand {
             fn from_length_angle(length: f32, angle: f32) -> Self {
-                let angled: Vec2 = [angle.sin(), angle.cos()].into();
+                let angled: Vec2 = [angle.cos(), -angle.sin()].into();
                 Self {
                     length,
                     angle,
@@ -236,20 +207,11 @@ impl Clock {
                 r: l,
                 g: l,
                 b: l,
-                a: 0.0,
+                a: 1.0,
             }
         };
 
-        //from and to are ranges
-        let transform_coords = |pos: Vec2, from: [Vec2; 2], to: [Vec2; 2]| {
-            let t1 = (pos.x - from[0].x) / (from[0].y - from[0].x);
-            let p1 = (1.0 - t1) * to[0].x + t1 * to[0].y;
-
-            let t1 = (pos.y - from[1].x) / (from[1].y - from[1].x);
-            let p2 = (1.0 - t1) * to[1].x + t1 * to[1].y;
-
-            [p1, p2]
-        };
+        let aspect_ratio = self.phys_size.width as f32 / self.phys_size.height as f32;
 
         let hands = [
             // Second hand:
@@ -260,23 +222,27 @@ impl Clock {
             Hand::from_length_angle(0.5, angle_from_period(12.0 * 60.0 * 60.0)),
         ];
 
-        let mut lines: Vec<LineData> = Vec::new();
+        let max_lines = 1 + 2_usize.pow(self.depth as u32 + 2_u32);
+        let mut lines: Vec<LineData> = Vec::with_capacity(max_lines);
 
         let mut paint_line = |points: [Vec2; 2], color: wgpu::Color, width: f32| {
-            //TODO: transform function doesn't work yet
-            let from = [[-1.0, 1.0].into(), [-1.0, 1.0].into()];
-            let to = [
-                [0.0, self.phys_size.width as f32].into(),
-                [0.0, self.phys_size.height as f32].into(),
-            ];
-            let transform = |pos: Vec2| transform_coords(pos, from, to);
-            let line = [points[0], points[1]];
+            let transform_coords = |mut pos: Vec2| -> Vec2 {
+                pos.x *= self.zoom;
+                pos.y *= self.zoom;
+
+                if aspect_ratio > 1.0 {
+                    pos.x /= aspect_ratio;
+                } else {
+                    pos.y *= aspect_ratio;
+                }
+                pos
+            };
 
             let c = [color.r as f32, color.g as f32, color.b as f32];
 
             lines.push(LineData {
-                start: line[0].into(),
-                end: line[1].into(),
+                start: transform_coords(points[0]).into(),
+                end: transform_coords(points[1]).into(),
                 color: c,
                 width,
             });
@@ -325,7 +291,7 @@ impl Clock {
         let mut luminance = 0.7; // Start dimmer than main hands
 
         let mut new_nodes = Vec::new();
-        for i in 0..self.depth {
+        for _ in 0..self.depth {
             new_nodes.clear();
             new_nodes.reserve(nodes.len() * 2);
 
@@ -366,7 +332,6 @@ pub struct State {
     render_pipeline: wgpu::RenderPipeline,
     line_data_buf: wgpu::Buffer,
     line_data_bind_group: wgpu::BindGroup,
-    is_space_pressed: bool,
     window: Arc<Window>,
     clock: Clock,
 }
@@ -383,13 +348,16 @@ impl State {
 
         let mut clock = Clock {
             time: dur,
+            last_calc_time: dur,
             start_line_width: 0.002,
             depth: 9,
             length_factor: 0.8,
-            luminance_factor: 0.8,
+            luminance_factor: 0.60,
             width_factor: 0.8,
             line_count: 0,
             phys_size: size,
+            zoom: 0.40,
+            line_cache: Vec::new(),
         };
 
         // The instance is a handle to our GPU
@@ -421,11 +389,7 @@ impl State {
                 required_features: wgpu::Features::empty(),
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.
-                required_limits: if cfg!(target_arch = "wasm32") {
-                    wgpu::Limits::downlevel_webgl2_defaults()
-                } else {
-                    wgpu::Limits::default()
-                },
+                required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
                 trace: wgpu::Trace::Off, // Trace path
                 experimental_features: ExperimentalFeatures::disabled(),
@@ -443,6 +407,7 @@ impl State {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
@@ -561,7 +526,6 @@ impl State {
             line_data_buf,
             line_data_bind_group,
             is_surface_configured: false,
-            is_space_pressed: false,
             window,
             clock,
         })
@@ -570,20 +534,21 @@ impl State {
     fn update(&mut self) {
         self.clock.update_time();
         self.clock.phys_size = self.window.inner_size();
-        // create vec with LineData
-        let updated_line_data = self.clock.calc_line_data();
 
-        // dbg!(&updated_line_data);
-        self.queue.write_buffer(
-            &self.line_data_buf,
-            0,
-            bytemuck::cast_slice(&updated_line_data),
-        );
+        // recalc every 16ms for 60fps
+        if (self.clock.time - self.clock.last_calc_time).abs() > 0.016 {
+            self.clock.line_cache = self.clock.calc_line_data();
+            self.clock.last_calc_time = self.clock.time;
+
+            self.queue.write_buffer(
+                &self.line_data_buf,
+                0,
+                bytemuck::cast_slice(&self.clock.line_cache),
+            );
+        }
     }
 
     fn render(&self) -> Result<(), wgpu::SurfaceError> {
-        self.window.request_redraw();
-
         // We can't render unless the surface is configured
         if !self.is_surface_configured {
             println!("Surface not configured");
