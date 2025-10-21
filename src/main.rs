@@ -36,7 +36,7 @@ impl App {
 
 impl ApplicationHandler<State> for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window_attributes = Window::default_attributes().with_title("fractal_clock_test");
+        let window_attributes = Window::default_attributes().with_title("fractal_clock");
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
