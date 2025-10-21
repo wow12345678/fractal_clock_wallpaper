@@ -1,13 +1,13 @@
-#![feature(core_float_math, slice_as_array)]
 use ::time::{Time, UtcDateTime, UtcOffset};
-use core::f32::math::round;
 use std::f32::consts::TAU;
+use std::iter;
+use std::ops::{Add, Mul};
 use std::result::Result;
 use std::sync::Arc;
-use std::iter;
+use winit::dpi::PhysicalSize;
 
 use wgpu::util::DeviceExt;
-use wgpu::{BindGroupEntry, BindGroupLayoutEntry};
+use wgpu::{BindGroupEntry, BindGroupLayoutEntry, ExperimentalFeatures};
 
 use winit::application::ApplicationHandler;
 use winit::event::{KeyEvent, MouseButton, WindowEvent};
@@ -70,7 +70,7 @@ impl App {
 impl ApplicationHandler<State> for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         #[allow(unused_mut)]
-        let mut window_attributes = Window::default_attributes().with_title("fractal_clock");
+        let mut window_attributes = Window::default_attributes().with_title("fractal_clock_test");
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
@@ -134,6 +134,60 @@ impl ApplicationHandler<State> for App {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Vec2 {
+    x: f32,
+    y: f32,
+}
+
+impl Mul<f32> for Vec2 {
+    type Output = Vec2;
+
+    fn mul(mut self, rhs: f32) -> Self::Output {
+        self.x *= rhs;
+        self.y *= rhs;
+        self
+    }
+}
+
+impl<T> From<[T; 2]> for Vec2
+where
+    T: Into<f32> + Copy,
+{
+    #[inline(always)]
+    fn from(value: [T; 2]) -> Self {
+        Self {
+            x: value[0].into(),
+            y: value[1].into(),
+        }
+    }
+}
+
+impl From<Vec2> for [f32; 2] {
+    fn from(val: Vec2) -> Self {
+        [val.x, val.y]
+    }
+}
+
+impl Vec2 {
+    fn rot(&self, other: Vec2) -> Vec2 {
+        Self {
+            x: self.y * other.x - self.x * other.y,
+            y: self.x * other.x + self.y * other.y,
+        }
+    }
+}
+
+impl Add for Vec2 {
+    type Output = Vec2;
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+        }
+    }
+}
+
 struct Clock {
     time: f64,
     start_line_width: f32,
@@ -142,6 +196,7 @@ struct Clock {
     luminance_factor: f32,
     width_factor: f32,
     line_count: usize,
+    phys_size: PhysicalSize<u32>,
 }
 
 impl Clock {
@@ -158,16 +213,16 @@ impl Clock {
         struct Hand {
             length: f32,
             angle: f32,
-            vec: [f32; 2],
+            vec: Vec2,
         }
 
         impl Hand {
             fn from_length_angle(length: f32, angle: f32) -> Self {
-                let (s, c) = (angle.sin(), angle.cos());
+                let angled: Vec2 = [angle.sin(), angle.cos()].into();
                 Self {
                     length,
                     angle,
-                    vec: [length * s, length * c],
+                    vec: angled * length,
                 }
             }
         }
@@ -185,6 +240,17 @@ impl Clock {
             }
         };
 
+        //from and to are ranges
+        let transform_coords = |pos: Vec2, from: [Vec2; 2], to: [Vec2; 2]| {
+            let t1 = (pos.x - from[0].x) / (from[0].y - from[0].x);
+            let p1 = (1.0 - t1) * to[0].x + t1 * to[0].y;
+
+            let t1 = (pos.y - from[1].x) / (from[1].y - from[1].x);
+            let p2 = (1.0 - t1) * to[1].x + t1 * to[1].y;
+
+            [p1, p2]
+        };
+
         let hands = [
             // Second hand:
             Hand::from_length_angle(self.length_factor, angle_from_period(60.0)),
@@ -196,13 +262,21 @@ impl Clock {
 
         let mut lines: Vec<LineData> = Vec::new();
 
-        let mut paint_line = |points: [[f32; 2]; 2], color: wgpu::Color, width: f32| {
+        let mut paint_line = |points: [Vec2; 2], color: wgpu::Color, width: f32| {
+            //TODO: transform function doesn't work yet
+            let from = [[-1.0, 1.0].into(), [-1.0, 1.0].into()];
+            let to = [
+                [0.0, self.phys_size.width as f32].into(),
+                [0.0, self.phys_size.height as f32].into(),
+            ];
+            let transform = |pos: Vec2| transform_coords(pos, from, to);
             let line = [points[0], points[1]];
+
             let c = [color.r as f32, color.g as f32, color.b as f32];
 
             lines.push(LineData {
-                start: line[0],
-                end: line[1],
+                start: line[0].into(),
+                end: line[1].into(),
                 color: c,
                 width,
             });
@@ -213,21 +287,23 @@ impl Clock {
             hands[1].angle - hands[2].angle + TAU / 2.0,
         ];
 
-        let hand_rotors = [
+        let hand_rotors: [Vec2; 2] = [
             [
                 hands[0].length * hand_rotations[0].sin(),
                 hands[0].length * hand_rotations[0].cos(),
-            ],
+            ]
+            .into(),
             [
                 hands[1].length * hand_rotations[1].sin(),
                 hands[1].length * hand_rotations[1].cos(),
-            ],
+            ]
+            .into(),
         ];
 
         #[derive(Clone, Copy)]
         struct Node {
-            pos: [f32; 2],
-            dir: [f32; 2],
+            pos: Vec2,
+            dir: Vec2,
         }
 
         let mut nodes = Vec::new();
@@ -235,8 +311,8 @@ impl Clock {
         let mut width = self.start_line_width;
 
         for (i, hand) in hands.iter().enumerate() {
-            let center = [0.0, 0.0];
-            let end = [center[0] + hand.vec[0], center[1] + hand.vec[1]];
+            let center: Vec2 = [0.0, 0.0].into();
+            let end = center + hand.vec;
             paint_line([center, end], color_from_luminance(255), width);
             if i < 2 {
                 nodes.push(Node {
@@ -248,28 +324,24 @@ impl Clock {
 
         let mut luminance = 0.7; // Start dimmer than main hands
 
-        let rot = |a: [f32; 2], b: [f32; 2]| [a[1] * b[0] - a[0] * b[1], a[0] * b[0] + a[1] * b[1]];
-
-        let add = |a: [f32; 2], b: [f32; 2]| [a[0] + b[0], a[1] + b[1]];
-
         let mut new_nodes = Vec::new();
-        for _ in 0..self.depth {
+        for i in 0..self.depth {
             new_nodes.clear();
             new_nodes.reserve(nodes.len() * 2);
 
             luminance *= self.luminance_factor;
             width *= self.width_factor;
 
-            let luminance_u8 = round(255.0 * luminance) as u8;
+            let luminance_u8 = (255.0 * luminance).round() as u8;
             if luminance_u8 == 0 {
                 break;
             }
 
             for &rotor in &hand_rotors {
                 for a in &nodes {
-                    let new_dir = rot(rotor, a.dir);
+                    let new_dir = rotor.rot(a.dir);
                     let b = Node {
-                        pos: add(a.pos, new_dir),
+                        pos: a.pos + new_dir,
                         dir: new_dir,
                     };
                     paint_line([a.pos, b.pos], color_from_luminance(luminance_u8), width);
@@ -284,7 +356,6 @@ impl Clock {
         lines
     }
 }
-
 
 pub struct State {
     surface: wgpu::Surface<'static>,
@@ -308,17 +379,18 @@ impl State {
             .duration_since(Time::MIDNIGHT)
             .as_seconds_f64();
 
+        let size = window.inner_size();
+
         let mut clock = Clock {
             time: dur,
             start_line_width: 0.002,
             depth: 9,
-            length_factor: 0.5,
+            length_factor: 0.8,
             luminance_factor: 0.8,
             width_factor: 0.8,
             line_count: 0,
+            phys_size: size,
         };
-
-        let size = window.inner_size();
 
         // The instance is a handle to our GPU
         // BackendBit::PRIMARY => Vulkan + Metal + DX12 + Browser WebGPU
@@ -356,6 +428,7 @@ impl State {
                 },
                 memory_hints: Default::default(),
                 trace: wgpu::Trace::Off, // Trace path
+                experimental_features: ExperimentalFeatures::disabled(),
             })
             .await
             .unwrap();
@@ -385,7 +458,6 @@ impl State {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
-
 
         let lines = clock.calc_line_data();
         let line_data_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -439,8 +511,16 @@ impl State {
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
                     blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent::REPLACE,
-                        alpha: wgpu::BlendComponent::REPLACE,
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
                     }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -489,6 +569,7 @@ impl State {
 
     fn update(&mut self) {
         self.clock.update_time();
+        self.clock.phys_size = self.window.inner_size();
         // create vec with LineData
         let updated_line_data = self.clock.calc_line_data();
 
@@ -531,7 +612,7 @@ impl State {
                             r: 0.0,
                             g: 0.0,
                             b: 0.0,
-                            a: 1.0,
+                            a: 0.0,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
