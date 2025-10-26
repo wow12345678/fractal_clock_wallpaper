@@ -173,7 +173,7 @@ struct Clock {
 impl Clock {
     fn update_time(&mut self) {
         let dur = UtcDateTime::now()
-            .to_offset(UtcOffset::from_hms(2, 0, 0).expect("has to be valid offset"))
+            .to_offset(UtcOffset::from_hms(1, 0, 0).expect("has to be valid offset"))
             .time()
             .duration_since(Time::MIDNIGHT)
             .as_seconds_f64();
