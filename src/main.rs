@@ -288,7 +288,7 @@ impl Clock {
             }
         }
 
-        let mut luminance = 0.7; // Start dimmer than main hands
+        let mut luminance = 0.7;
 
         let mut new_nodes = Vec::new();
         for _ in 0..self.depth {
@@ -376,6 +376,7 @@ impl State {
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
+                // don't need high performance
                 power_preference: wgpu::PowerPreference::LowPower,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
@@ -387,20 +388,15 @@ impl State {
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: wgpu::Features::empty(),
-                // WebGL doesn't support all of wgpu's features, so if
-                // we're building for the web we'll have to disable some.
                 required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
-                trace: wgpu::Trace::Off, // Trace path
+                trace: wgpu::Trace::Off,
                 experimental_features: ExperimentalFeatures::disabled(),
             })
             .await
             .unwrap();
 
         let surface_caps = surface.get_capabilities(&adapter);
-        // Shader code in this tutorial assumes an Srgb surface texture. Using a different
-        // one will result all the colors comming out darker. If you want to support non
-        // Srgb surfaces, you'll need to account for that when drawing to the frame.
         let surface_format = surface_caps
             .formats
             .iter()
@@ -413,6 +409,7 @@ impl State {
             format: surface_format,
             width: size.width,
             height: size.height,
+            // aka vsync
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
@@ -510,10 +507,7 @@ impl State {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
-            // If the pipeline will be used with a multiview render pass, this
-            // indicates how many array layers the attachments will have.
             multiview: None,
-            // Useful for optimizing shader compilation on Android
             cache: None,
         });
 
@@ -549,7 +543,6 @@ impl State {
     }
 
     fn render(&self) -> Result<(), wgpu::SurfaceError> {
-        // We can't render unless the surface is configured
         if !self.is_surface_configured {
             println!("Surface not configured");
             return Ok(());
