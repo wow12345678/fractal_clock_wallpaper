@@ -26,11 +26,15 @@ struct LineData {
 
 struct App {
     state: Option<State>,
+    local_offset: UtcOffset,
 }
 
 impl App {
-    pub fn new() -> Self {
-        Self { state: None }
+    pub fn new(local_offset: UtcOffset) -> Self {
+        Self {
+            state: None,
+            local_offset,
+        }
     }
 }
 
@@ -41,7 +45,7 @@ impl ApplicationHandler<State> for App {
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
         {
-            self.state = Some(pollster::block_on(State::new(window)).unwrap());
+            self.state = Some(pollster::block_on(State::new(window, self.local_offset)).unwrap());
         }
     }
 
@@ -168,12 +172,13 @@ struct Clock {
     phys_size: PhysicalSize<u32>,
     zoom: f32,
     line_cache: Vec<LineData>,
+    local_offset: UtcOffset,
 }
 
 impl Clock {
     fn update_time(&mut self) {
         let dur = UtcDateTime::now()
-            .to_offset(UtcOffset::from_hms(1, 0, 0).expect("has to be valid offset"))
+            .to_offset(self.local_offset)
             .time()
             .duration_since(Time::MIDNIGHT)
             .as_seconds_f64();
@@ -337,9 +342,9 @@ pub struct State {
 }
 
 impl State {
-    async fn new(window: Arc<Window>) -> anyhow::Result<State> {
+    async fn new(window: Arc<Window>, local_offset: UtcOffset) -> anyhow::Result<State> {
         let dur = UtcDateTime::now()
-            .to_offset(UtcOffset::from_hms(2, 0, 0).expect("has to be valid offset"))
+            .to_offset(local_offset)
             .time()
             .duration_since(Time::MIDNIGHT)
             .as_seconds_f64();
@@ -358,6 +363,7 @@ impl State {
             phys_size: size,
             zoom: 0.40,
             line_cache: Vec::new(),
+            local_offset,
         };
 
         // The instance is a handle to our GPU
@@ -618,8 +624,13 @@ impl State {
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
+    let local_offset = UtcOffset::current_local_offset().unwrap_or_else(|e| {
+        log::warn!("Failed to query local offset: {e}. Defaulting to UTC");
+        UtcOffset::from_hms(0, 0, 0).unwrap()
+    });
+
     let event_loop = EventLoop::with_user_event().build()?;
-    let mut app = App::new();
+    let mut app = App::new(local_offset);
     event_loop.run_app(&mut app)?;
 
     Ok(())
