@@ -258,14 +258,15 @@ impl Clock {
             hands[1].angle - hands[2].angle + TAU / 2.0,
         ];
 
+        // Clip-space Y points up, unlike egui's screen-space Y, so mirror the rotations.
         let hand_rotors: [Vec2; 2] = [
             [
-                hands[0].length * hand_rotations[0].sin(),
+                -hands[0].length * hand_rotations[0].sin(),
                 hands[0].length * hand_rotations[0].cos(),
             ]
             .into(),
             [
-                hands[1].length * hand_rotations[1].sin(),
+                -hands[1].length * hand_rotations[1].sin(),
                 hands[1].length * hand_rotations[1].cos(),
             ]
             .into(),
@@ -282,7 +283,7 @@ impl Clock {
         let mut width = self.start_line_width;
 
         for (i, hand) in hands.iter().enumerate() {
-            let center: Vec2 = [0.0, 0.0].into();
+            let center: Vec2 = [0.0_f32, 0.0_f32].into();
             let end = center + hand.vec;
             paint_line([center, end], color_from_luminance(255), width);
             if i < 2 {
@@ -337,11 +338,35 @@ pub struct State {
     render_pipeline: wgpu::RenderPipeline,
     line_data_buf: wgpu::Buffer,
     line_data_bind_group: wgpu::BindGroup,
+    multisampled_framebuffer: wgpu::TextureView,
     window: Arc<Window>,
     clock: Clock,
 }
 
 impl State {
+    fn create_multisampled_framebuffer(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> wgpu::TextureView {
+        let multisampled_texture_extent = wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        };
+        let multisampled_texture = device.create_texture(&wgpu::TextureDescriptor {
+            size: multisampled_texture_extent,
+            mip_level_count: 1,
+            sample_count: 4,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            label: Some("Multisampled frame descriptor"),
+            view_formats: &[],
+        });
+
+        multisampled_texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
     async fn new(window: Arc<Window>, local_offset: UtcOffset) -> anyhow::Result<State> {
         let dur = UtcDateTime::now()
             .to_offset(local_offset)
@@ -509,13 +534,15 @@ impl State {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: 1,
+                count: 4,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
             cache: None,
         });
+
+        let multisampled_framebuffer = Self::create_multisampled_framebuffer(&device, &config);
 
         Ok(Self {
             surface,
@@ -525,6 +552,7 @@ impl State {
             render_pipeline,
             line_data_buf,
             line_data_bind_group,
+            multisampled_framebuffer,
             is_surface_configured: false,
             window,
             clock,
@@ -569,8 +597,8 @@ impl State {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &self.multisampled_framebuffer,
+                    resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.0,
@@ -603,6 +631,8 @@ impl State {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
+            self.multisampled_framebuffer =
+                Self::create_multisampled_framebuffer(&self.device, &self.config);
             self.is_surface_configured = true;
         }
     }
